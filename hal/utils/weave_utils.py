@@ -335,6 +335,10 @@ MODEL_PRICES_DICT = {
         "prompt_tokens": 3 / 1e6,
         "completion_tokens": 15 / 1e6,
     },
+    "openrouter/moonshotai/kimi-k2": {
+        "prompt_tokens": 0.6 / 1e6,
+        "completion_tokens": 2.5 / 1e6,
+    },
     "claude-sonnet-4-20250514": {
         "prompt_tokens": 3 / 1e6,
         "completion_tokens": 15 / 1e6,
