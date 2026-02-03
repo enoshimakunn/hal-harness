@@ -5,6 +5,7 @@ import os
 import tempfile
 from typing import Dict, Any
 
+from ..utils.logging_utils import print_warning
 from .base_benchmark import BaseBenchmark
 
 
@@ -46,13 +47,34 @@ class USACOBenchmark(BaseBenchmark):
 
             # pass entire task with agent output
             eval_tasks = {}
+            missing_responses = []
             for task_id, task in normalized_output.items():
+                response = task
+                if response is None:
+                    missing_responses.append(task_id)
+                    continue
+                if not isinstance(response, str):
+                    response = str(response)
                 eval_tasks[task_id] = {
                     **self.benchmark[task_id],
-                    "response": normalized_output[task_id],
+                    "response": response,
                 }
 
+            if missing_responses:
+                truncated = ", ".join(missing_responses[:10])
+                if len(missing_responses) > 10:
+                    truncated += f", ...(+{len(missing_responses)-10})"
+                print_warning(
+                    f"USACO benchmark: skipping tasks with no response from agent: {truncated}"
+                )
+
             temp_file_path = None
+
+            if not eval_tasks:
+                print_warning(
+                    "USACO benchmark: no valid agent responses to evaluate; returning empty results."
+                )
+                return {"rdict": {}, "sdict": {}, "rs": [], "ss": []}
 
             # Create docker client
             client = docker.from_env()
@@ -126,6 +148,8 @@ class USACOBenchmark(BaseBenchmark):
     def get_metrics(self, eval_results: Dict[str, Any]) -> Dict[str, Any]:
         """Extract metrics from evaluation results"""
         sdict = eval_results["sdict"]
+        if not sdict:
+            return {"accuracy": 0.0, "successful_tasks": [], "failed_tasks": []}
 
         return {
             "accuracy": sum(

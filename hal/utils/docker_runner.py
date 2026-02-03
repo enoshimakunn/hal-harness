@@ -382,7 +382,7 @@ class DockerRunner:
                 container_id,
                 "bash",
                 "-c",
-                "conda run -n agent_env pip install weave==0.51.41 'gql<4'",
+                "conda run -n agent_env pip install \"wandb>=0.17.2,<0.19.0\" weave==0.51.41 'gql<4'",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -501,13 +501,9 @@ class DockerRunner:
 import os
 import json
 import importlib.util
-import weave
 import traceback
 
 try:
-    # Initialize weave
-    weave.init("{run_id}")
-    
     # Load input data
     with open("input.json", "r") as f:
         input_data = json.load(f)
@@ -526,8 +522,7 @@ try:
     agent_fn = getattr(module, "{function_name}")
     
     # Run the agent function
-    with weave.attributes({{"weave_task_id": "{task_id}"}}):
-        result = agent_fn(input_data, **agent_args)
+    result = agent_fn(input_data, **agent_args)
     
     # Save output
     with open("output.json", "w") as f:

@@ -1,3 +1,4 @@
-weave
+weave==0.51.41
+wandb>=0.17.2,<0.19.0
 openai
 sweet_rl

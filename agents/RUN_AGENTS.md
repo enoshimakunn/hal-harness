@@ -55,6 +55,30 @@ Run USACO evaluations using foundation models available via Amazon Bedrock.
    | Amazon Nova Micro | bedrock/amazon.nova-micro-v1:0                       | nova.txt        |
    | Llama-3.3 70B     | bedrock/us.meta.llama3-3-70b-instruct-v1:0           | claude.txt      |
 
+### OpenHands SDK Agent
+
+Route USACO tasks through an OpenHands coding session that runs inside the HAL harness.
+
+1. **Install dependencies**
+   ```bash
+   pip install -r agents/openhands_usaco_agent/requirements.txt
+   ```
+2. **Provide model credentials** with env vars or `-A` flags, e.g. `-A model_name=openai/gpt-4.1 -A llm_api_key=$OPENAI_API_KEY`.
+3. **Run evaluation**
+   ```bash
+   hal-eval --benchmark usaco \
+       --agent_dir agents/openhands_usaco_agent \
+       --agent_function main.run \
+       --agent_name "USACO_OpenHands" \
+       -A model_name=openai/gpt-4o-mini-2024-07-18 \
+       -A llm_api_key=$OPENAI_API_KEY \
+       -A max_actions=5
+   ```
+
+Optional knobs:
+- `-A solution_filename=main.py` changes the file OpenHands writes.
+- `-A workspace_root=/tmp/openhands-usaco` persists workspaces between runs.
+
 ## tau-bench
 
 The following agents are available for the tau-bench benchmark. Both `taubench_retail` and `taubench_airline` are available. Run evaluations using the following commands:

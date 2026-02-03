@@ -9,8 +9,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Miniconda
-RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh \
+# Install Miniconda (supports both x86_64 and aarch64 builders)
+RUN ARCH="$(uname -m)" \
+    && if [ "$ARCH" = "x86_64" ]; then CONDA_INSTALLER=Miniconda3-latest-Linux-x86_64.sh; \
+       elif [ "$ARCH" = "aarch64" ]; then CONDA_INSTALLER=Miniconda3-latest-Linux-aarch64.sh; \
+       else echo "Unsupported architecture: $ARCH" && exit 1; fi \
+    && wget "https://repo.anaconda.com/miniconda/${CONDA_INSTALLER}" -O /tmp/miniconda.sh \
     && bash /tmp/miniconda.sh -b -p /opt/conda \
     && rm /tmp/miniconda.sh \
     && ln -s /opt/conda/etc/profile.d/conda.sh /etc/profile.d/conda.sh \
@@ -21,8 +25,8 @@ RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -
 # Add conda to PATH
 ENV PATH /opt/conda/bin:$PATH
 
-# Install weave and pin gql < 4
-RUN pip install weave==0.51.41 "gql<4"
+# Install weave/wandb combo and pin gql < 4
+RUN pip install "wandb>=0.17.2,<0.19.0" weave==0.51.41 "gql<4"
 
 # Set working directory
 WORKDIR /workspace
