@@ -382,7 +382,8 @@ class DockerRunner:
                 container_id,
                 "bash",
                 "-c",
-                "conda run -n agent_env pip install weave==0.51.41 'gql<4'",
+                # "conda run -n agent_env pip install weave==0.51.41 'gql<4'",
+                "conda run -n agent_env pip install \"wandb>=0.17.2,<0.19.0\" weave==0.51.41 'gql<4'",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
