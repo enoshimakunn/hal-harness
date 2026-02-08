@@ -32,6 +32,7 @@ class BenchmarkManager:
             "assistantbench",
             "colbench_backend_programming",
             "colbench_frontend_design",
+            "financial_agent",
         ]
 
     def get_benchmark(self, benchmark_name: str) -> BaseBenchmark:
@@ -91,6 +92,10 @@ class BenchmarkManager:
             from .benchmarks.colbench import ColBenchBenchmark
 
             benchmark = ColBenchBenchmark(self.agent_dir, self.config, benchmark_name)
+        elif benchmark_name == "financial_agent":
+            from .benchmarks.financial_agent import FinancialAgentBenchmark
+
+            benchmark = FinancialAgentBenchmark(self.agent_dir, self.config)
         else:
             raise ValueError(f"Unknown benchmark: {benchmark_name}")
 
