@@ -127,6 +127,10 @@ MODEL_PRICES_DICT = {
         "prompt_tokens": 0.15 / 1e6,
         "completion_tokens": 0.6 / 1e6,
     },
+    "openai/gpt-4o": {"prompt_tokens": 2.5 / 1e6, "completion_tokens": 10 / 1e6},
+    "openai/gpt-4o-mini": {"prompt_tokens": 0.15 / 1e6, "completion_tokens": 0.6 / 1e6},
+    "openai/gpt-5.1": {"prompt_tokens": 1.25 / 1e6, "completion_tokens": 10 / 1e6},
+    "gpt-5.1": {"prompt_tokens": 1.25 / 1e6, "completion_tokens": 10 / 1e6},
     "openai/gpt-4.1-2025-04-14": {
         "prompt_tokens": 2 / 1e6,
         "completion_tokens": 8 / 1e6,
