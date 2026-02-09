@@ -26,3 +26,6 @@ uv.lock
 
 # Claude Code
 .claude/settings.local.json
+
+# Sample videos and audios for skill training
+agents/bny_agent/data/**

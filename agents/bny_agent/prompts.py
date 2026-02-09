@@ -27,3 +27,33 @@ triggers:                         # Optional (OpenHands extension)
 Instructions and documentation for the agent...
 
 """
+
+MMSkillTrainer_PROMPT_TEMPLATE = """You are a helpful assistant that can summarize a video or audio file into skills. Please summarize the given video or audio file into a skill that is in the format of a claude skill, with the skill name being your summarization of the skill's purpose. Specifically, your output should be in the following format (if multiple skills are identified, return all of them), and do not include any other text or formatting:
+
+<skill_name>
+Your skill name here...
+</skill_name>
+
+<skill_description>
+---
+name: my-skill                    # Required (standard)
+description: >                    # Required (standard)
+  A brief description of what this skill does and when to use it.
+license: MIT                      # Optional (standard)
+compatibility: Requires bash      # Optional (standard)
+metadata:                         # Optional (standard)
+  author: your-name
+  version: "1.0"
+triggers:                         # Optional (OpenHands extension)
+  - keyword1
+  - keyword2
+---
+
+# Skill Content
+
+Instructions and documentation for the agent...
+
+
+</skill_description>
+
+"""
