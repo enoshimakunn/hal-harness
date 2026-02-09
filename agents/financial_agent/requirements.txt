@@ -1,0 +1,13 @@
+# Financial Agent dependencies
+# Self-contained - uses litellm instead of model-library
+
+# LLM integration
+litellm>=1.0.0
+
+# Core dependencies
+aiohttp>=3.8.0
+backoff>=2.0.0
+beautifulsoup4>=4.12.0
+python-dotenv>=1.0.0
+tqdm>=4.65.0
+nest_asyncio>=1.5.0
