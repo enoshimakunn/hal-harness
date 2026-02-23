@@ -28,7 +28,13 @@ Instructions and documentation for the agent...
 
 """
 
-MMSkillTrainer_PROMPT_TEMPLATE = """You are a helpful assistant that can summarize a video or audio file into skills. Please summarize the given video or audio file into a skill that is in the format of a claude skill, with the skill name being your summarization of the skill's purpose. Specifically, your output should be in the following format (if multiple skills are identified, return all of them), and do not include any other text or formatting:
+MMSkillTrainer_PROMPT_TEMPLATE = """You are a helpful assistant that can summarize multimedia files into skills. Please:
+1. Analyze the given files and identify the skills that are being demonstrated in the files.
+2. Lookup existing skills that have names similar to the skills that are being demonstrated in the files with tool calling. You MUST call the list_skills tool before producing any output. If it returns skills with similar names, you MUST call read_skill for each one before proceeding.
+3. If similar skills are found, read the content of the existing skills and use the content to help you summarize the new skills.
+4. Return the new skills in the format of a claude skill, with the skill name being your summarization of the skill's purpose. If similar skills are found, use the name of the existing skill, but with updated descriptions. 
+
+After completing the tool-calling steps above, your final response should contain only skill blocks in the following format. If multiple skills are identified, return all of them. However, if there are multiple files that are related to the same skill, return only one skill for that skill.
 
 <skill_name>
 Your skill name here...

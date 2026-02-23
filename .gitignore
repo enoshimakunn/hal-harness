@@ -29,3 +29,4 @@ uv.lock
 
 # Sample videos and audios for skill training
 agents/bny_agent/data/**
+agents/bny_agent/skills/**

@@ -1,5 +1,6 @@
 import base64
 import dotenv
+import json
 import mimetypes
 import os
 import subprocess
@@ -100,22 +101,31 @@ class MMSkillTrainer:
             data = base64.b64encode(f.read()).decode("utf-8")
         return data, mime_type
 
-    def train(self, input_file_path: str):
-        # Compress media files to stay within API payload limits
-        mime_type, _ = mimetypes.guess_type(input_file_path)
-        compressed_path = None
+    @staticmethod
+    def _prepare_file(file_path: str) -> tuple[str, str | None]:
+        """Compress if needed and return (usable_path, temp_path_or_None)."""
+        mime_type, _ = mimetypes.guess_type(file_path)
         if mime_type and mime_type.startswith("video/"):
-            compressed_path = self._compress_video(input_file_path)
-            input_file_path = compressed_path
-        elif mime_type and mime_type.startswith("audio/"):
-            compressed_path = self._compress_audio(input_file_path)
-            input_file_path = compressed_path
+            compressed = MMSkillTrainer._compress_video(file_path)
+            return compressed, compressed
+        if mime_type and mime_type.startswith("audio/"):
+            compressed = MMSkillTrainer._compress_audio(file_path)
+            return compressed, compressed
+        return file_path, None
 
+    def train(self, input_file_paths: str | list[str]):
+        if isinstance(input_file_paths, str):
+            input_file_paths = [input_file_paths]
+
+        prepared: list[tuple[str, str | None]] = []
         try:
-            self._train_impl(input_file_path)
+            for path in input_file_paths:
+                prepared.append(self._prepare_file(path))
+            self._train_impl([p for p, _ in prepared])
         finally:
-            if compressed_path:
-                os.unlink(compressed_path)
+            for _, tmp in prepared:
+                if tmp:
+                    os.unlink(tmp)
 
     @staticmethod
     def _build_media_part(data: str, mime_type: str) -> dict:
@@ -139,28 +149,111 @@ class MMSkillTrainer:
             }
         raise ValueError(f"Unsupported media type: {mime_type}")
 
-    def _train_impl(self, input_file_path: str):
-        # Encode the media file for the multimodal API
-        data, mime_type = self._encode_media(input_file_path)
-        media_part = self._build_media_part(data, mime_type)
+    @staticmethod
+    def _is_text_file(file_path: str) -> bool:
+        mime_type, _ = mimetypes.guess_type(file_path)
+        return mime_type is not None and mime_type.startswith("text/")
 
-        # Send request to OpenAI API to train the skill
-        print(f"[MMTrainer] Sending request to API to train the skill")
-        response = client.chat.completions.create(
-            model = MODEL_NAME,
-            messages = [
-                {"role": "system", "content": MMSkillTrainer_PROMPT_TEMPLATE},
-                {"role": "user", "content": [
-                    {"type": "text", "text": "Please analyze this media and extract skills from it."},
-                    media_part,
-                ]},
-            ],
-        )
-        if not response.choices:
-            raise RuntimeError(
-                f"API returned no choices. Full response: {response.model_dump_json(indent=2)}"
+    @staticmethod
+    def _read_text_file(file_path: str) -> dict:
+        with open(file_path, "r") as f:
+            content = f.read()
+        filename = os.path.basename(file_path)
+        return {"type": "text", "text": f"[File: {filename}]\n{content}"}
+
+    _TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "list_skills",
+                "description": "List the names of all existing skills.",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_skill",
+                "description": "Read the full content of a specific skill file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "The name of the skill to read.",
+                        },
+                    },
+                    "required": ["skill_name"],
+                },
+            },
+        },
+    ]
+
+    _TOOL_DISPATCH: dict[str, Callable[..., str]] = {
+        "list_skills": lambda **_kw: json.dumps(_list_skills()),
+        "read_skill": lambda skill_name, **_kw: _read_skill(skill_name),
+    }
+
+    def _train_impl(self, input_file_paths: list[str]):
+        content_parts: list[dict] = []
+        for path in input_file_paths:
+            if self._is_text_file(path):
+                content_parts.append(self._read_text_file(path))
+            else:
+                data, mime_type = self._encode_media(path)
+                content_parts.append(self._build_media_part(data, mime_type))
+
+        messages: list[dict] = [
+            {"role": "system", "content": MMSkillTrainer_PROMPT_TEMPLATE},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Please analyze this media and extract skills from it."},
+                *content_parts,
+            ]},
+        ]
+
+        print(f"[MMTrainer] Sending request to API to train the skill ({len(content_parts)} file(s))")
+        while True:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                tools=self._TOOLS,
             )
-        output = response.choices[0].message.content
+            if not response.choices:
+                raise RuntimeError(
+                    f"API returned no choices. Full response: {response.model_dump_json(indent=2)}"
+                )
+
+            choice = response.choices[0]
+            if choice.finish_reason != "tool_calls":
+                break
+
+            messages.append({
+                "role": "assistant",
+                "content": choice.message.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in choice.message.tool_calls
+                ],
+            })
+            for tool_call in choice.message.tool_calls:
+                fn_name = tool_call.function.name
+                fn_args = json.loads(tool_call.function.arguments)
+                print(f"[MMTrainer] Tool call: {fn_name}({fn_args})")
+                result = self._TOOL_DISPATCH[fn_name](**fn_args)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
+                })
+
+        output = choice.message.content
         print(f"[MMTrainer] Response: {output}")
         
         # Parse the output into a skill
@@ -195,13 +288,15 @@ def _read_skill(skill_name: str) -> str:
     return skill_path.read_text()
 
 
-def _train_from_upload(file) -> str:
-    """Handle a file upload from the Gradio UI and run training."""
-    if file is None:
+def _train_from_upload(files) -> str:
+    """Handle file upload(s) from the Gradio UI and run training."""
+    if not files:
         return "No file uploaded."
+    if isinstance(files, str):
+        files = [files]
     trainer = MMSkillTrainer()
     try:
-        trainer.train(file)
+        trainer.train(files)
         return "Training complete! New skills saved. Refresh the skill list to see them."
     except Exception as e:
         return f"Error during training:\n{e}"
@@ -249,8 +344,9 @@ def frontend():
             with gr.Column(scale=1):
                 gr.Markdown("## Train New Skill")
                 file_input = gr.File(
-                    label="Upload a video or audio file",
-                    file_types=["video", "audio"],
+                    label="Upload video, audio, or text files",
+                    file_types=["video", "audio", ".txt"],
+                    file_count="multiple",
                 )
                 train_btn = gr.Button("Train", variant="primary")
                 status_output = gr.Textbox(label="Status", interactive=False)
