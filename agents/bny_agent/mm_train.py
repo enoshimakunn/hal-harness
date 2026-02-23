@@ -261,7 +261,7 @@ class MMSkillTrainer:
         skill_descriptions = []
         for skill in output.split("<skill_name>")[1:]:
             skill_name = skill.split("</skill_name>")[0]
-            skill_description = output.split("<skill_description>")[1].split("</skill_description>")[0]
+            skill_description = skill.split("<skill_description>")[1].split("</skill_description>")[0]
             skill_names.append(skill_name.strip().replace(" ", "-"))
             skill_descriptions.append(skill_description)
         

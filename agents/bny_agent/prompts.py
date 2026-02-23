@@ -34,7 +34,7 @@ MMSkillTrainer_PROMPT_TEMPLATE = """You are a helpful assistant that can summari
 3. If similar skills are found, read the content of the existing skills and use the content to help you summarize the new skills.
 4. Return the new skills in the format of a claude skill, with the skill name being your summarization of the skill's purpose. If similar skills are found, use the name of the existing skill, but with updated descriptions. 
 
-After completing the tool-calling steps above, your final response should contain only skill blocks in the following format. If multiple skills are identified, return all of them. However, if there are multiple files that are related to the same skill, return only one skill for that skill.
+After completing the tool-calling steps above, your final response should contain only skill blocks in the following format. If multiple skills are identified, return all of them. However, if there are multiple files that are related to the same skill, return only one skill for that skill. You MUST use exactly <skill_name> and <skill_description> as the XML tags. Do NOT use any other tag names.
 
 <skill_name>
 Your skill name here...
