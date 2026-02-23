@@ -3,6 +3,7 @@ import dotenv
 import json
 import mimetypes
 import os
+import re
 import subprocess
 import tempfile
 
@@ -262,8 +263,12 @@ class MMSkillTrainer:
         for skill in output.split("<skill_name>")[1:]:
             skill_name = skill.split("</skill_name>")[0]
             skill_description = skill.split("<skill_description>")[1].split("</skill_description>")[0]
-            skill_names.append(skill_name.strip().replace(" ", "-"))
-            skill_descriptions.append(skill_description)
+            
+            # Regularize the skill name to contain only:
+            # 1. lowercase alphabetic characters and numbers
+            # 2. hyphens
+            skill_names.append(re.sub(r"[^a-z0-9-]", "", skill_name.lower().strip()))
+            skill_descriptions.append(skill_description)    
         
         # Save results
         for skill_name, skill_description in zip(skill_names, skill_descriptions):
