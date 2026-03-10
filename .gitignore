@@ -24,6 +24,9 @@ uv.lock
 .compose.yaml
 *.DS_Store
 
+# Notes
+misc/**
+
 # Claude Code
 .claude/settings.local.json
 

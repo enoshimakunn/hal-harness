@@ -44,6 +44,7 @@ smolagents.models.supports_stop_parameter = supports_stop_parameter
 # Import agent_hints using absolute path
 sys.path.append(os.path.dirname(__file__))
 from agent_hints import AGENT_HINTS  # noqa: E402 # FIXME: smells bad
+from slack_tools import get_slack_tools  # noqa: E402
 
 
 try:
@@ -836,6 +837,8 @@ Respond with ONLY "GIVING_UP" if the answer indicates giving up, or "VALID_ATTEM
         query_vision_language_model,
         custom_final_answer_tool,  # Add the custom tool directly to the list
     ]
+
+    CORE_TOOLS.extend(get_slack_tools())
 
     # Create the agent
     agent = CodeAgent(
