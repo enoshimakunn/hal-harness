@@ -130,6 +130,7 @@ open_deep_research = [
 
 [project.scripts]
 hal-eval = "hal.cli:main"
+hal-skill-eval = "hal.skill_evaluation_framework:main"
 hal-upload = "hal.utils.upload:upload_results"
 hal-decrypt = "hal.utils.decrypt:decrypt_cli"
 
