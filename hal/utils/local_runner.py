@@ -7,11 +7,9 @@ import logging
 from typing import Dict, Any, Optional
 from pathlib import Path
 from hal.benchmarks.base_benchmark import BaseBenchmark
-from hal.utils.retry_handler import add_retry_to_runner
 from rich.progress import Progress, TaskID
 
-# Get logger for verbose output
-verbose_logger = logging.getLogger("agent_eval.verbose")
+logger = logging.getLogger(__name__)
 
 
 class LocalRunner:
@@ -32,9 +30,7 @@ class LocalRunner:
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._file_lock = asyncio.Lock()
         self.benchmark = benchmark
-
-        # Add retry functionality (enabled by default with sensible defaults)
-        add_retry_to_runner(self, retry_config)
+        self.retry_config = retry_config  # FIXME: remove this
 
     async def run_agent(
         self,
@@ -90,7 +86,7 @@ class LocalRunner:
                 try:
                     shutil.rmtree(temp_dir, ignore_errors=True)
                 except Exception as e:
-                    print(f"Warning: Failed to cleanup {temp_dir}: {e}")
+                    logger.warning(f"Failed to cleanup {temp_dir}: {e}")
 
     async def _process_task(
         self,
@@ -106,7 +102,7 @@ class LocalRunner:
     ) -> Optional[Dict[str, Any]]:
         """Process a single task with semaphore control"""
         async with self._semaphore:
-            print(
+            logger.info(
                 f"Starting task {task_id} (active tasks: {self.max_concurrent - self._semaphore._value})"
             )
             result = await self._run_single_task(
@@ -129,7 +125,7 @@ class LocalRunner:
             if progress and task is not None:
                 progress.update(task, advance=1)
 
-            print(f"Completed task {task_id}")
+            logger.info(f"Completed task {task_id}")
             return result
 
     async def _run_single_task(
@@ -179,7 +175,7 @@ class LocalRunner:
                             shutil.copy2(src_path, dest_full_path)
                     except Exception as e:
                         error_msg = f"Warning: Failed to copy task file {src_path} to {dest_full_path}: {e}"
-                        verbose_logger.debug(error_msg)
+                        logger.debug(error_msg)
 
             script = self._create_runner_script(
                 agent_function=agent_function, task_id=task_id, run_id=run_id
@@ -193,7 +189,7 @@ class LocalRunner:
             run_agent_cmd = ["python", str(script_path)]
             if self.conda_env:
                 # Install weave in conda environment
-                verbose_logger.debug(f"Running agent for task {task_id}")
+                logger.debug(f"Running agent for task {task_id}")
                 process = await asyncio.create_subprocess_exec(
                     *[
                         "conda",
@@ -202,7 +198,6 @@ class LocalRunner:
                         self.conda_env,
                         "pip",
                         "install",
-                        "wandb>=0.17.2,<0.19.0",
                         "weave==0.51.41",
                         "gql<4",
                     ],
@@ -217,7 +212,7 @@ class LocalRunner:
                 run_agent_cmd = ["conda", "run", "-n", self.conda_env] + run_agent_cmd
 
             # Run agent
-            verbose_logger.debug(f"Running agent for task {task_id}")
+            logger.debug(f"Running agent for task {task_id}")
             process = await asyncio.create_subprocess_exec(
                 *run_agent_cmd,
                 cwd=str(temp_dir),
@@ -227,19 +222,16 @@ class LocalRunner:
 
             stdout, stderr = await process.communicate()
 
+            # FIXME: consider logging this to a different log group
             # Log agent output
             if stdout:
-                verbose_logger.debug(
-                    f"Agent stdout for task {task_id}:\n{stdout.decode()}"
-                )
+                logger.info(f"Agent stdout for task {task_id}:\n{stdout.decode()}")
             if stderr:
-                verbose_logger.debug(
-                    f"Agent stderr for task {task_id}:\n{stderr.decode()}"
-                )
+                logger.info(f"Agent stderr for task {task_id}:\n{stderr.decode()}")
 
             if process.returncode != 0:
                 error_msg = stderr.decode() if stderr else "Unknown error"
-                verbose_logger.debug(f"Error running task {task_id}: {error_msg}")
+                logger.info(f"Error running task {task_id}: {error_msg}")
                 return {task_id: f"ERROR: {error_msg}"}
 
             # Load results
@@ -248,12 +240,12 @@ class LocalRunner:
                     return json.load(f)
             except FileNotFoundError:
                 error_msg = "ERROR: No output file generated"
-                verbose_logger.debug(f"{error_msg} for task {task_id}")
+                logger.debug(f"{error_msg} for task {task_id}")
                 return {task_id: error_msg}
 
         except Exception as e:
             error_msg = f"Error processing task {task_id}: {e}"
-            verbose_logger.debug(error_msg)
+            logger.debug(error_msg)
             return {task_id: f"ERROR: {str(e)}"}
 
         finally:
@@ -269,7 +261,7 @@ class LocalRunner:
                 shutil.rmtree(temp_dir)
             except Exception as e:
                 error_msg = f"Warning: Failed to cleanup {temp_dir}: {e}"
-                verbose_logger.debug(error_msg)
+                logger.debug(error_msg)
 
     def _create_runner_script(
         self, agent_function: str, task_id: str, run_id: str
@@ -283,9 +275,13 @@ class LocalRunner:
 import os
 import json
 import importlib.util
+import weave
 import traceback
 
 try:
+    # Initialize weave
+    weave.init("{run_id}")
+    
     # Load input data
     with open("input.json", "r") as f:
         input_data = json.load(f)
@@ -304,7 +300,8 @@ try:
     agent_fn = getattr(module, "{function_name}")
     
     # Run the agent function
-    result = agent_fn(input_data, **agent_args)
+    with weave.attributes({{"weave_task_id": "{task_id}"}}):
+        result = agent_fn(input_data, **agent_args)
     
     # Save output
     with open("output.json", "w") as f:

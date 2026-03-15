@@ -11,42 +11,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import math
 import os
 import re
 import shutil
 import subprocess
 import tempfile
-from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-
-STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "by",
-    "for",
-    "from",
-    "in",
-    "is",
-    "it",
-    "of",
-    "on",
-    "or",
-    "that",
-    "the",
-    "to",
-    "with",
-}
+from openai import OpenAI
 
 
 @dataclass
@@ -61,6 +37,22 @@ class SkillInfo:
 class TaskInfo:
     task_id: str
     description: str
+
+
+@dataclass
+class SimilarityConfig:
+    method: str
+    embedding_model: str
+    llm_model: str
+    embedding_batch_size: int
+    api_key: str | None
+
+
+@dataclass
+class SimilarityRuntime:
+    config: SimilarityConfig
+    client: OpenAI
+    task_embeddings: list[list[float]] | None = None
 
 
 def read_text(path: Path) -> str:
@@ -167,44 +159,138 @@ def select_skills(
     )
 
 
-def tokenize(text: str) -> list[str]:
-    return [
-        token
-        for token in re.findall(r"[a-z0-9]+", text.lower())
-        if len(token) > 1 and token not in STOPWORDS
-    ]
+def build_openai_client(api_key: str | None) -> OpenAI:
+    if api_key:
+        return OpenAI(api_key=api_key)
+    return OpenAI()
 
 
-def bm25_scores(query: str, docs: list[str], k1: float = 1.5, b: float = 0.75) -> list[float]:
-    tokenized_docs = [tokenize(doc) for doc in docs]
-    tokenized_query = tokenize(query)
-    if not tokenized_docs or not tokenized_query:
-        return [0.0 for _ in docs]
+def chunked(items: list[str], chunk_size: int) -> list[list[str]]:
+    return [items[idx : idx + chunk_size] for idx in range(0, len(items), chunk_size)]
 
-    doc_freq: Counter[str] = Counter()
-    for tokens in tokenized_docs:
-        doc_freq.update(set(tokens))
 
-    doc_term_freqs = [Counter(tokens) for tokens in tokenized_docs]
-    avg_doc_len = sum(len(tokens) for tokens in tokenized_docs) / len(tokenized_docs)
-    if avg_doc_len == 0:
-        return [0.0 for _ in docs]
+def embed_texts(client: OpenAI, model: str, texts: list[str], batch_size: int) -> list[list[float]]:
+    if not texts:
+        return []
 
-    n_docs = len(tokenized_docs)
-    scores: list[float] = []
-    for term_freqs, tokens in zip(doc_term_freqs, tokenized_docs, strict=True):
-        score = 0.0
-        doc_len = len(tokens)
-        for term in tokenized_query:
-            tf = term_freqs.get(term, 0)
-            if tf == 0:
-                continue
-            df = doc_freq.get(term, 0)
-            idf = math.log(1.0 + (n_docs - df + 0.5) / (df + 0.5))
-            denom = tf + k1 * (1.0 - b + b * (doc_len / avg_doc_len))
-            score += idf * (tf * (k1 + 1.0) / denom)
-        scores.append(score)
-    return scores
+    embeddings: list[list[float]] = []
+    for batch in chunked(texts, batch_size):
+        response = client.embeddings.create(model=model, input=batch)
+        embeddings.extend([item.embedding for item in response.data])
+    return embeddings
+
+
+def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
+    if len(vec_a) != len(vec_b):
+        raise ValueError("Embedding vectors must have the same length.")
+
+    dot_product = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for a, b in zip(vec_a, vec_b, strict=True):
+        dot_product += a * b
+        norm_a += a * a
+        norm_b += b * b
+
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot_product / ((norm_a ** 0.5) * (norm_b ** 0.5))
+
+
+def llm_similarity_score(client: OpenAI, model: str, skill_description: str, task_description: str) -> float:
+    if not skill_description.strip() or not task_description.strip():
+        return 0.0
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You score how well a skill description matches a task description. "
+                    "Return only a single floating point number between 0 and 1, where 1 means "
+                    "the skill is highly relevant and 0 means it is not relevant."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Score the similarity between the following skill and task.\n\n"
+                    "Scoring rubric:\n"
+                    "- 0.0 to 0.2: almost no overlap in capability\n"
+                    "- 0.2 to 0.5: limited or indirect relevance\n"
+                    "- 0.5 to 0.8: clearly relevant\n"
+                    "- 0.8 to 1.0: highly aligned and directly applicable\n\n"
+                    f"Skill description:\n{skill_description.strip()}\n\n"
+                    f"Task description:\n{task_description.strip()}\n\n"
+                    "Output only the numeric score."
+                ),
+            },
+        ],
+        temperature=0,
+        max_tokens=16,
+    )
+
+    content = response.choices[0].message.content or ""
+    match = re.search(r"-?\d+(?:\.\d+)?", content)
+    if not match:
+        raise ValueError(f"Could not parse similarity score from model output: {content!r}")
+
+    score = float(match.group(0))
+    return max(0.0, min(1.0, score))
+
+
+def build_similarity_runtime(
+    config: SimilarityConfig,
+    tasks: list[TaskInfo],
+) -> SimilarityRuntime:
+    client = build_openai_client(config.api_key)
+    runtime = SimilarityRuntime(config=config, client=client)
+
+    if config.method == "embedding":
+        runtime.task_embeddings = embed_texts(
+            client=client,
+            model=config.embedding_model,
+            texts=[task.description for task in tasks],
+            batch_size=config.embedding_batch_size,
+        )
+
+    return runtime
+
+
+def similarity_scores_for_skill(
+    skill: SkillInfo,
+    tasks: list[TaskInfo],
+    runtime: SimilarityRuntime,
+) -> list[float]:
+    if runtime.config.method == "embedding":
+        if runtime.task_embeddings is None:
+            raise ValueError("Task embeddings were not initialized for embedding similarity.")
+        skill_embedding = embed_texts(
+            client=runtime.client,
+            model=runtime.config.embedding_model,
+            texts=[skill.description],
+            batch_size=1,
+        )[0]
+        return [
+            cosine_similarity(skill_embedding, task_embedding)
+            for task_embedding in runtime.task_embeddings
+        ]
+
+    if runtime.config.method == "llm":
+        scores: list[float] = []
+        for task in tasks:
+            scores.append(
+                llm_similarity_score(
+                    client=runtime.client,
+                    model=runtime.config.llm_model,
+                    skill_description=skill.description,
+                    task_description=task.description,
+                )
+            )
+        return scores
+
+    raise ValueError(f"Unsupported similarity method: {runtime.config.method}")
 
 
 def load_benchmark_tasks(benchmark_name: str, hal_dir: Path) -> list[TaskInfo]:
@@ -261,10 +347,11 @@ def parse_agent_args(raw_args: list[str]) -> dict[str, Any]:
 def match_tasks_for_skill(
     skill: SkillInfo,
     tasks: list[TaskInfo],
+    similarity_runtime: SimilarityRuntime,
     top_k: int,
     min_score: float | None,
 ) -> list[dict[str, Any]]:
-    scores = bm25_scores(skill.description, [task.description for task in tasks])
+    scores = similarity_scores_for_skill(skill, tasks, similarity_runtime)
     rows = [
         {
             "task_id": task.task_id,
@@ -499,6 +586,37 @@ def main() -> None:
         help="Optional score floor; tasks below this are dropped before top-k.",
     )
     parser.add_argument(
+        "--similarity-method",
+        type=str,
+        choices=["embedding", "llm"],
+        default="embedding",
+        help="Similarity backend used to match skills to tasks.",
+    )
+    parser.add_argument(
+        "--embedding-model",
+        type=str,
+        default="text-embedding-3-small",
+        help="Embedding model used when --similarity-method=embedding.",
+    )
+    parser.add_argument(
+        "--llm-similarity-model",
+        type=str,
+        default="gpt-4.1-mini",
+        help="LLM used when --similarity-method=llm.",
+    )
+    parser.add_argument(
+        "--embedding-batch-size",
+        type=int,
+        default=128,
+        help="Batch size for task embedding requests.",
+    )
+    parser.add_argument(
+        "--similarity-api-key",
+        type=str,
+        default=None,
+        help="Optional API key for similarity model calls. Falls back to environment config.",
+    )
+    parser.add_argument(
         "--agent-dir",
         type=Path,
         default=Path("agents/usaco_example_agent"),
@@ -571,6 +689,16 @@ def main() -> None:
     skills = discover_skills(args.skills_pool.resolve())
     selected_skills = select_skills(skills, args.skill, args.all_skills)
     tasks = load_benchmark_tasks(args.benchmark, hal_root)
+    similarity_runtime = build_similarity_runtime(
+        SimilarityConfig(
+            method=args.similarity_method,
+            embedding_model=args.embedding_model,
+            llm_model=args.llm_similarity_model,
+            embedding_batch_size=args.embedding_batch_size,
+            api_key=args.similarity_api_key,
+        ),
+        tasks,
+    )
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     summary_path = args.output_dir / f"{args.run_id_prefix}-{args.benchmark}-{timestamp}.json"
@@ -580,6 +708,7 @@ def main() -> None:
         matched_tasks = match_tasks_for_skill(
             skill=skill,
             tasks=tasks,
+            similarity_runtime=similarity_runtime,
             top_k=args.top_k,
             min_score=args.min_score,
         )
@@ -588,6 +717,7 @@ def main() -> None:
             "skill_name": skill.name,
             "skill_md_path": str(skill.skill_md_path),
             "skill_description": skill.description,
+            "similarity_method": args.similarity_method,
             "n_matched_tasks": len(matched_tasks),
             "matched_tasks": matched_tasks,
             "evaluation": None,
@@ -634,6 +764,10 @@ def main() -> None:
             "benchmark": args.benchmark,
             "top_k": args.top_k,
             "min_score": args.min_score,
+            "similarity_method": args.similarity_method,
+            "embedding_model": args.embedding_model,
+            "llm_similarity_model": args.llm_similarity_model,
+            "embedding_batch_size": args.embedding_batch_size,
             "agent_dir": str(args.agent_dir),
             "agent_function": args.agent_function,
             "agent_name": args.agent_name,
