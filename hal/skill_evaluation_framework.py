@@ -13,8 +13,6 @@ import asyncio
 import json
 import os
 import re
-import shutil
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,6 +21,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 from openai import OpenAI
+import weave
+from hal.utils.logging_utils import print_step, create_progress
 
 
 @dataclass
@@ -257,7 +257,6 @@ def build_similarity_runtime(
 
     return runtime
 
-
 def similarity_scores_for_skill(
     skill: SkillInfo,
     tasks: list[TaskInfo],
@@ -377,10 +376,11 @@ def run_skill_eval(
     agent_args: dict[str, Any],
     selected_task_ids: list[str],
     hal_root: Path,
-    usaco_harness_image: str,
+    docker: bool = False,
 ) -> dict[str, Any]:
     from hal.benchmark_manager import BenchmarkManager
     from hal.utils.local_runner import LocalRunner
+    from hal.utils.docker_runner import DockerRunner
 
     benchmark_manager = BenchmarkManager(agent_dir=str(agent_dir), config={})
     benchmark_obj = benchmark_manager.get_benchmark(benchmark)
@@ -393,33 +393,49 @@ def run_skill_eval(
     benchmark_obj.benchmark = selected_dataset
 
     run_dir = benchmark_obj.get_run_dir(run_id)
-    runner = LocalRunner(
-        log_dir=run_dir,
-        max_concurrent=max_concurrent,
-        conda_env=None,
-        benchmark=benchmark_obj,
-    )
-    agent_output = asyncio.run(
-        runner.run_agent(
-            dataset=selected_dataset,
-            agent_function=agent_function,
-            agent_dir=str(agent_dir),
-            agent_args=agent_args,
-            run_id=run_id,
+
+    weave_client = None
+    if os.getenv("HAL_DISABLE_WEAVE", "").lower() not in {"1", "true", "yes"}:
+        print_step("Initializing logging with W&B Weave for skill evaluation...")
+        weave_client = weave.init(run_id)
+    else:
+        print_step("Skipping Weave initialization for skill evaluation (HAL_DISABLE_WEAVE set)")
+
+    if docker:
+        runner = DockerRunner(
+            log_dir=run_dir,
+            max_concurrent=max_concurrent,
             benchmark=benchmark_obj,
         )
-    )
-
-    if benchmark == "usaco":
-        eval_results = evaluate_usaco_with_cached_image(
-            agent_output=agent_output,
-            benchmark_subset=selected_dataset,
-            run_id=run_id,
-            benchmark_dir=hal_root / "hal" / "benchmarks" / "USACO",
-            image_name=usaco_harness_image,
-        )
     else:
-        eval_results = benchmark_obj.evaluate_output(agent_output, run_id)
+        runner = LocalRunner(
+            log_dir=run_dir,
+            max_concurrent=max_concurrent,
+            conda_env=None,
+            benchmark=benchmark_obj,
+        )
+
+    with create_progress() as progress:
+        task = progress.add_task(
+            "Running skill evaluation agent... (see results directory for logs)",
+            total=1,
+        )
+        agent_output = asyncio.run(
+            runner.run_agent(
+                dataset=selected_dataset,
+                agent_function=agent_function,
+                agent_dir=str(agent_dir),
+                agent_args=agent_args,
+                run_id=run_id,
+                benchmark=benchmark_obj,
+            )
+        )
+        progress.update(task, advance=1)
+
+    if weave_client is not None:
+        weave.finish()
+
+    eval_results = benchmark_obj.evaluate_output(agent_output, run_id)
 
     metrics = benchmark_obj.get_metrics(eval_results)
     return {
@@ -428,125 +444,6 @@ def run_skill_eval(
         "raw_agent_output": agent_output,
         "wandb_enabled": False,
     }
-
-
-def ensure_usaco_harness_image(image_name: str, requirements_path: Path) -> None:
-    import docker
-
-    client = docker.from_env()
-    try:
-        client.images.get(image_name)
-        return
-    except docker.errors.ImageNotFound:
-        pass
-
-    with tempfile.TemporaryDirectory(prefix="usaco_harness_build_") as tmp:
-        build_dir = Path(tmp)
-        shutil.copy2(requirements_path, build_dir / "requirements.txt")
-        dockerfile = build_dir / "Dockerfile"
-        dockerfile.write_text(
-            "\n".join(
-                [
-                    "FROM python:3.11",
-                    "WORKDIR /tmp/usaco-harness",
-                    "COPY requirements.txt /tmp/usaco-harness/requirements.txt",
-                    "RUN pip install --no-cache-dir -r /tmp/usaco-harness/requirements.txt",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
-        print(f"[hal-skill-eval] building USACO harness image: {image_name}")
-        _, build_logs = client.images.build(
-            path=str(build_dir),
-            dockerfile="Dockerfile",
-            tag=image_name,
-        )
-        for log in build_logs:
-            if "stream" in log:
-                line = log["stream"].strip()
-                if line:
-                    print(line)
-
-
-def evaluate_usaco_with_cached_image(
-    *,
-    agent_output: dict[str, Any],
-    benchmark_subset: dict[str, Any],
-    run_id: str,
-    benchmark_dir: Path,
-    image_name: str,
-) -> dict[str, Any]:
-    import docker
-
-    normalized_output = {}
-    for task_id, task_data in agent_output.items():
-        if isinstance(task_data, dict) and "answer" in task_data:
-            normalized_output[task_id] = task_data["answer"]
-        else:
-            normalized_output[task_id] = task_data
-
-    eval_tasks: dict[str, Any] = {}
-    for task_id, response in normalized_output.items():
-        if response is None:
-            continue
-        if not isinstance(response, str):
-            response = str(response)
-        if task_id not in benchmark_subset:
-            continue
-        eval_tasks[task_id] = {
-            **benchmark_subset[task_id],
-            "response": response,
-        }
-
-    if not eval_tasks:
-        return {"rdict": {}, "sdict": {}, "rs": [], "ss": []}
-
-    requirements_path = benchmark_dir / "requirements.txt"
-    ensure_usaco_harness_image(image_name, requirements_path)
-
-    client = docker.from_env()
-    container = client.containers.run(
-        image_name,
-        command="tail -f /dev/null",
-        volumes={
-            str(benchmark_dir): {"bind": "/app", "mode": "rw", "chmod": "777"},
-        },
-        working_dir="/app",
-        detach=True,
-    )
-    temp_file_path: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as temp_file:
-            json.dump(eval_tasks, temp_file)
-            temp_file_path = temp_file.name
-
-        subprocess.run(
-            ["docker", "cp", temp_file_path, f"{container.id}:/app/responses_{run_id}.json"],
-            check=True,
-        )
-        container.exec_run(
-            "mkdir -p judge_sandbox/predictions/usaco judge_sandbox/solutions/usaco code_sandbox results"
-        )
-        cmd = (
-            "python harness.py "
-            f"--problem_dict_with_responses /app/responses_{run_id}.json "
-            f"--run_id {run_id}"
-        )
-        result = container.exec_run(cmd, stream=True)
-        for line in result.output:
-            print(line.decode(), end="")
-
-        rdict_result = container.exec_run(f"cat /app/results/rdict_{run_id}.json")
-        sdict_result = container.exec_run(f"cat /app/results/sdict_{run_id}.json")
-        rdict = json.loads(rdict_result.output.decode())
-        sdict = json.loads(sdict_result.output.decode())
-        return {"rdict": rdict, "sdict": sdict, "rs": list(rdict.values()), "ss": list(sdict.values())}
-    finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
-        container.stop()
-        container.remove()
 
 
 def main() -> None:
@@ -676,10 +573,12 @@ def main() -> None:
         help="Directory where summary JSON files are written.",
     )
     parser.add_argument(
-        "--usaco-harness-image",
-        type=str,
-        default="hal-skill-eval-usaco-harness:latest",
-        help="USACO harness image name used only by this skill evaluation framework.",
+        "--docker",
+        action="store_true",
+        help=(
+            "Run the agent inside Docker containers (similar to hal-eval --docker). "
+            "Evaluation still follows each benchmark's own logic."
+        ),
     )
     args = parser.parse_args()
 
@@ -741,7 +640,7 @@ def main() -> None:
                 agent_args=run_agent_args,
                 selected_task_ids=selected_task_ids,
                 hal_root=hal_root,
-                usaco_harness_image=args.usaco_harness_image,
+                docker=args.docker,
             )
             row["evaluation"] = {
                 "run_id": run_id,
